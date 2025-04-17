@@ -1,27 +1,62 @@
-import functions_framework
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
+import os
 import requests
-import google.auth
-from google.auth.transport.requests import Request
-from flask import jsonify, request
 
-# Definir URLs de las APIs de FHIR
-FHIR_PATIENT_API_URL = "https://healthcare.googleapis.com/v1/projects/g-stg-gsv000-tlmd-erp-prj-6fe2/locations/us-east1/datasets/stg-medicalpractice/fhirStores/mp-fhir/fhir/Patient"
-FHIR_QUESTIONNAIRE_RESPONSE_API_URL = "https://healthcare.googleapis.com/v1/projects/g-stg-gsv000-tlmd-erp-prj-6fe2/locations/us-east1/datasets/stg-medicalpractice/fhirStores/mp-fhir/fhir/QuestionnaireResponse"
+app = FastAPI()
 
-# Obtener credenciales automáticamente desde Google
-credentials, project = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-healthcare"])
+FHIR_STORE_PATH = "https://api-dev.fhir.goes.gob.sv/v1/r4"
+HEADERS = {
+    "Accept": "application/json",
+    "GS-APIKEY": os.getenv("GS_APIKEY")
+}
 
-def get_access_token():
-    credentials.refresh(Request())
-    return credentials.token
+
+def access_fhir(resource_type: str, resource_id: str):
+    resource_url = f"{FHIR_STORE_PATH}/{resource_type}/{resource_id}"
+    response = requests.get(resource_url, headers=HEADERS)
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail=f"Error al obtener {resource_type}/{resource_id}")
+    return response.json()
+
+
+def fetch_questionnaire_responses(subject: str):
+    response = requests.get(
+        f"{FHIR_STORE_PATH}/QuestionnaireResponse",
+        headers=HEADERS,
+        params={"subject": subject}
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail="Error al obtener datos FHIR")
+    return response.json().get("entry", [])
+
+
+def extract_items_structure(item_list, prefix=""):
+    results = []
+    for item in item_list:
+        text = item.get("text", "Pregunta desconocida")
+        full_text = f"{prefix}{text}" if prefix else text
+        answers = [str(answer.get(list(answer.keys())[0])) for answer in item.get("answer", [])]
+        if answers:
+            results.append({"pregunta": full_text, "respuestas": answers})
+        if "item" in item:
+            results.extend(extract_items_structure(item["item"], prefix=full_text + " -> "))
+    return results
+
 
 def extract_patient_data(resource):
-    """
-    Extrae la información relevante de un paciente y la devuelve en el formato solicitado.
-    """
     nombre = resource.get("name", [{}])[0].get("text", "Desconocido")
-    contacto = [{"value": t.get("value", ""), "system": t.get("system", "")} for t in resource.get("telecom", []) if t.get("value")]
-    documentos = [{"value": i.get("value", ""), "display": i.get("type", {}).get("coding", [{}])[0].get("display", "Desconocido")} for i in resource.get("identifier", []) if i.get("value")]
+    contacto = [
+        {"value": t.get("value", ""), "system": t.get("system", "")}
+        for t in resource.get("telecom", []) if t.get("value")
+    ]
+    documentos = [
+        {
+            "value": i.get("value", ""),
+            "display": i.get("type", {}).get("coding", [{}])[0].get("display", "Desconocido")
+        }
+        for i in resource.get("identifier", []) if i.get("value")
+    ]
     direccion = resource.get("address", [{}])[0] if resource.get("address") else {}
 
     return {
@@ -34,66 +69,59 @@ def extract_patient_data(resource):
         "activo": resource.get("active", False)
     }
 
-def extract_determinants(entry):
-    """
-    Extrae únicamente los determinantes socioambientales del recurso QuestionnaireResponse.
-    """
-    resource = entry.get("resource", {})
-    socio_items = [item for item in resource.get("item", []) if item.get("text", "").lower() == "determinantes socioambientales"]
 
-    if not socio_items:
-        return None
-    
-    parsed_questions = []
-    def extract_items(items, prefix=""):
-        for item in items:
-            question = prefix + item.get("text", "Pregunta desconocida")
-            if "answer" in item:
-                answers = [str(answer[list(answer.keys())[0]]) for answer in item["answer"]]
-                parsed_questions.append(f"{question}: {', '.join(answers)}")
-            if "item" in item:
-                extract_items(item["item"], prefix=question + " -> ")
-    
-    for socio_item in socio_items:
-        extract_items(socio_item.get("item", []))
-    
-    doctor_id = resource.get("author", {}).get("reference", "").replace("Practitioner/", "")
-    patient_id = resource.get("subject", {}).get("reference", "").replace("Patient/", "")
-    
-    return {
-        "questions": parsed_questions,
-        "doctor": doctor_id,
-        "patient": patient_id,
-        "date": resource.get("authored", "Fecha desconocida"),
-        "status": resource.get("status", "Desconocido")
-    }
+@app.get("/patient")
+def get_patient(patient_id: str):
+    resource = access_fhir("Patient", patient_id)
+    return JSONResponse(content=extract_patient_data(resource))
 
-@functions_framework.http
-def format_fhir_patient(request):
-    token = get_access_token()
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    patient_id = request.args.get("patient_id")
-    if not patient_id:
-        return jsonify({"error": "Se requiere el parámetro 'patient_id'"}), 400
-    response = requests.get(f"{FHIR_PATIENT_API_URL}/{patient_id}", headers=headers)
-    if response.status_code != 200:
-        return jsonify({"error": "No se pudo obtener la información del paciente"}), response.status_code
-    patient_data = extract_patient_data(response.json())
-    return jsonify(patient_data)
 
-@functions_framework.http
-def format_fhir_socioenvironmental_determinants(request):
-    token = get_access_token()
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    subject = request.args.get("subject")
-    if not subject:
-        return jsonify({"error": "Se requiere el parámetro 'subject'"}), 400
-    response = requests.get(FHIR_QUESTIONNAIRE_RESPONSE_API_URL, headers=headers, params={"subject": subject})
-    if response.status_code != 200:
-        return jsonify({"error": "No se pudo obtener la respuesta de FHIR"}), response.status_code
-    data = response.json()
-    socio_data = [extract_determinants(entry) for entry in data.get("entry", [])]
-    socio_data = [entry for entry in socio_data if entry]
-    if not socio_data:
-        return jsonify({"error": "No se encontraron determinantes socioambientales"}), 404
-    return jsonify(socio_data)
+@app.get("/prevention")
+def get_prevention(subject: str):
+    entries = fetch_questionnaire_responses(subject)
+    results = []
+    for entry in entries:
+        resource = entry.get("resource", {})
+        prevention_items = [item for item in resource.get("item", []) if item.get("text", "").lower() == "variables prevención"]
+        if not prevention_items:
+            continue
+        for item in prevention_items:
+            preguntas = extract_items_structure(item.get("item", []))
+            results.append({
+                "fecha": resource.get("authored", "Fecha desconocida"),
+                "estado": resource.get("status", "Desconocido"),
+                "doctor_id": resource.get("author", {}).get("reference", "").replace("Practitioner/", ""),
+                "paciente_id": resource.get("subject", {}).get("reference", "").replace("Patient/", ""),
+                "preguntas": preguntas
+            })
+    if not results:
+        raise HTTPException(status_code=404, detail="No se encontraron variables de prevención")
+    return JSONResponse(content=results)
+
+
+@app.get("/determinants")
+def get_determinants(subject: str):
+    entries = fetch_questionnaire_responses(subject)
+    results = []
+    for entry in entries:
+        resource = entry.get("resource", {})
+        determinant_items = [item for item in resource.get("item", []) if item.get("text", "").lower() == "determinantes socioambientales"]
+        if not determinant_items:
+            continue
+        for item in determinant_items:
+            preguntas = extract_items_structure(item.get("item", []))
+            results.append({
+                "fecha": resource.get("authored", "Fecha desconocida"),
+                "estado": resource.get("status", "Desconocido"),
+                "doctor_id": resource.get("author", {}).get("reference", "").replace("Practitioner/", ""),
+                "paciente_id": resource.get("subject", {}).get("reference", "").replace("Patient/", ""),
+                "preguntas": preguntas
+            })
+    if not results:
+        raise HTTPException(status_code=404, detail="No se encontraron determinantes socioambientales")
+    return JSONResponse(content=results)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
