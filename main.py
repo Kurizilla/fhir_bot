@@ -1,8 +1,24 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Body
 from fastapi.responses import JSONResponse
 import os
 import requests
 import json
+import time
+import vertexai
+from vertexai.preview.language_models import TextGenerationModel
+
+app = FastAPI()
+
+parameters_medlm = {
+    "candidate_count": 1,
+    "max_output_tokens": 1000,
+    "temperature": 0.1,
+    "top_k": 40,
+    "top_p": 0.80,
+}
+
+def initialize_vertex_ai():
+    vertexai.init(project=os.getenv("MEDLM_PROJECT"), location="us-central1")
 
 app = FastAPI()
 
@@ -254,6 +270,25 @@ def get_observaciones(subject: str):
 
     raise HTTPException(status_code=404, detail="No se encontraron observaciones registradas")
 
+@app.post("/medlm_query")
+def medlm_query(payload: dict = Body(...)):
+    prompt = payload.get("prompt")
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Falta el campo 'prompt'.")
+
+    initialize_vertex_ai()
+    model = TextGenerationModel.from_pretrained("medlm-medium")
+
+    for attempt in range(3):
+        try:
+            result = model.predict(prompt=prompt, **parameters_medlm)
+            return JSONResponse(content={"response": result.text})
+        except Exception as e:
+            wait = 0.5 * (2**attempt)
+            time.sleep(wait)
+            if attempt == 2:
+                raise HTTPException(status_code=500, detail="Error interno al usar MedLM")
+
 @app.get("/alergias")
 def get_alergias(subject: str):
     print("🔍 Entrando a /alergias con:", subject)
@@ -308,6 +343,52 @@ def get_alergias(subject: str):
     if not results:
         print("📭 No se encontraron alergias activas y confirmadas")
         raise HTTPException(status_code=404, detail="No se encontraron alergias registradas")
+
+    return JSONResponse(content=results)
+
+@app.get("/medicamentos")
+def get_medication_requests(subject: str):
+    print("📡 FHIR request para MedicationRequest con subject:", subject)
+
+    response = requests.get(
+        f"{FHIR_STORE_PATH}/MedicationRequest",
+        headers=HEADERS,
+        params={"subject": subject}
+    )
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail="No se pudo obtener la información de medicamentos")
+
+    bundle = response.json()
+    entries = bundle.get("entry", [])
+
+    results = []
+    for entry in entries:
+        resource = entry.get("resource", {})
+        medicamento = resource.get("medicationCodeableConcept", {}).get("coding", [{}])[0].get("display", "Desconocido")
+        status = resource.get("status", "Desconocido")
+        intent = resource.get("intent", "Desconocido")
+        paciente_id = resource.get("subject", {}).get("reference", "").replace("Patient/", "")
+
+        # Obtener instrucciones de dosis
+        instrucciones = []
+        for di in resource.get("dosageInstruction", []):
+            instrucciones.append(di.get("text", ""))
+
+        # Obtener razones
+        razones = [r.get("display", "") for r in resource.get("reasonReference", [])]
+
+        results.append({
+            "medicamento": medicamento,
+            "estado": status,
+            "intencion": intent,
+            "instrucciones": instrucciones,
+            "razones": razones,
+            "paciente_id": paciente_id
+        })
+
+    if not results:
+        raise HTTPException(status_code=404, detail="No se encontraron recetas de medicamentos")
 
     return JSONResponse(content=results)
 

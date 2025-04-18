@@ -4,4 +4,7 @@ google-auth-oauthlib
 fastapi
 uvicorn[standard]
 requests
+vertexai
+google-cloud-aiplatform
+
 
