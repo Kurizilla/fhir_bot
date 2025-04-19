@@ -6,6 +6,9 @@ import json
 import time
 import vertexai
 from vertexai.preview.language_models import TextGenerationModel
+from vertexai.preview.generative_models import GenerativeModel
+from datetime import datetime
+from fastapi import Query
 
 app = FastAPI()
 
@@ -20,9 +23,28 @@ parameters_medlm = {
 def initialize_vertex_ai():
     vertexai.init(project=os.getenv("MEDLM_PROJECT"), location="us-central1")
 
+
+def gemini_query(prompt: str):
+    try:
+        initialize_vertex_ai()
+        model = GenerativeModel("gemini-2.0-flash-001")
+        response = model.generate_content(prompt)
+        
+        if hasattr(response, "text"):
+            return response.text
+        elif hasattr(response, "candidates"):
+            return response.candidates[0].content.parts[0].text
+        else:
+            return "Respuesta desconocida de Gemini."
+
+    except Exception as e:
+        print("❌ Error al usar Gemini:", str(e))
+        return "No se pudo generar resumen."
+
+
 app = FastAPI()
 
-FHIR_STORE_PATH = "https://api-dev.fhir.goes.gob.sv/v1/r4"
+FHIR_STORE_PATH = "https://api-qa.fhir.goes.gob.sv/v1/r4/"
 HEADERS = {
     "Accept": "application/json",
     "GS-APIKEY": os.getenv("GS_APIKEY")
@@ -391,6 +413,174 @@ def get_medication_requests(subject: str):
         raise HTTPException(status_code=404, detail="No se encontraron recetas de medicamentos")
 
     return JSONResponse(content=results)
+
+def flatten_items(items, prefix=""):
+    results = []
+    for item in items:
+        text = item.get("text", "Pregunta desconocida")
+        full_text = f"{prefix}{text}" if prefix else text
+        answers = item.get("answer", [])
+        if answers:
+            for ans in answers:
+                value = next(iter(ans.values()), "")
+                results.append(f"{full_text}: {value}")
+        if "item" in item:
+            results.extend(flatten_items(item["item"], prefix=full_text + " -> "))
+    return results
+
+@app.get("/disponibilidad_recursos")
+def disponibilidad_recursos(patient_id: str = Query(..., description="ID del paciente")):
+    resumen = {
+        "patient_id": patient_id,
+        "nombre": "Desconocido",
+        "genero": "Desconocido",
+        "edad": "Desconocida",
+        "recursos_disponibles": {}
+    }
+
+    try:
+        paciente = access_fhir("Patient", patient_id)
+        resumen["nombre"] = paciente.get("name", [{}])[0].get("text", "Desconocido")
+        resumen["genero"] = paciente.get("gender", "Desconocido")
+
+        fecha_nacimiento = paciente.get("birthDate")
+        if fecha_nacimiento:
+            birth_date = datetime.strptime(fecha_nacimiento, "%Y-%m-%d")
+            edad = (datetime.today() - birth_date).days // 365
+            resumen["edad"] = f"{edad} años"
+    except Exception:
+        raise HTTPException(status_code=404, detail="No se encontró el recurso Patient o error en datos")
+
+    recursos_fhir = {
+        "condiciones": f"{FHIR_STORE_PATH}/Condition",
+        "observaciones": f"{FHIR_STORE_PATH}/Observation",
+        "alergias": f"{FHIR_STORE_PATH}/AllergyIntolerance",
+        "antecedentes_familiares": f"{FHIR_STORE_PATH}/FamilyMemberHistory",
+        "medicamentos": f"{FHIR_STORE_PATH}/MedicationRequest"
+    }
+
+    for nombre, url in recursos_fhir.items():
+        param = {"patient": patient_id} if "AllergyIntolerance" in url or "FamilyMemberHistory" in url else {"subject": f"Patient/{patient_id}"}
+
+        try:
+            res = requests.get(url, headers=HEADERS, params=param)
+            if res.status_code != 200:
+                resumen["recursos_disponibles"][nombre] = "Error"
+                continue
+
+            entries = res.json().get("entry", [])
+            if not entries:
+                resumen["recursos_disponibles"][nombre] = 0
+                continue
+
+            if nombre == "condiciones":
+                resumen["recursos_disponibles"][nombre] = [
+                    entry.get("resource", {}).get("code", {}).get("coding", [{}])[0].get("display", "Desconocida")
+                    for entry in entries
+                ]
+            elif nombre == "alergias":
+                alergias_info = []
+                for entry in entries:
+                    resource = entry.get("resource", {})
+                    alergia = resource.get("code", {}).get("coding", [{}])[0].get("display", "Desconocido")
+                    status = resource.get("clinicalStatus", {}).get("coding", [{}])[0].get("code", "estado desconocido")
+                    verification = resource.get("verificationStatus", {}).get("coding", [{}])[0].get("code", "verificación desconocida")
+                    alergias_info.append({
+                        "alergia_a": alergia,
+                        "estado": status,
+                        "verificacion": verification
+                    })
+                resumen["recursos_disponibles"][nombre] = alergias_info
+            elif nombre == "observaciones":
+                observaciones_laboratorio = []
+                for entry in entries:
+                    resource = entry.get("resource", {})
+                    categorias = resource.get("category", [])
+                    if any(c.get("coding", [{}])[0].get("code") in ["laboratory", "vital-signs"] for c in categorias):
+                        display = resource.get("code", {}).get("coding", [{}])[0].get("display", "Desconocida")
+                        observaciones_laboratorio.append(display)
+                resumen["recursos_disponibles"][nombre] = observaciones_laboratorio
+            elif nombre == "antecedentes_familiares":
+                antecedentes = []
+                for entry in entries:
+                    resource = entry.get("resource", {})
+                    if resource.get("status") != "completed":
+                        continue
+                    relacion = resource.get("relationship", {}).get("coding", [{}])[0].get("display", "Relación desconocida")
+                    for cond in resource.get("condition", []):
+                        condicion = cond.get("code", {}).get("coding", [{}])[0].get("display", "Condición desconocida")
+                        antecedentes.append(f"{relacion} - {condicion}")
+                resumen["recursos_disponibles"][nombre] = antecedentes
+            elif nombre == "medicamentos":
+                medicamentos = []
+                for entry in entries:
+                    resource = entry.get("resource", {})
+                    nombre_med = resource.get("medicationCodeableConcept", {}).get("coding", [{}])[0].get("display", "Desconocido")
+                    status = resource.get("status", "Desconocido")
+                    medicamentos.append(f"{nombre_med} ({status})")
+                resumen["recursos_disponibles"][nombre] = medicamentos
+            else:
+                resumen["recursos_disponibles"][nombre] = len(entries)
+
+        except Exception:
+            resumen["recursos_disponibles"][nombre] = "Error"
+
+    return JSONResponse(content=resumen)
+
+@app.get("/banderas_rojas")
+def banderas_rojas(patient_id: str = Query(..., description="ID del paciente")):
+    try:
+        # Obtener cuestionarios
+        response = requests.get(
+            f"{FHIR_STORE_PATH}/QuestionnaireResponse",
+            headers=HEADERS,
+            params={"subject": f"Patient/{patient_id}"}
+        )
+        entries = response.json().get("entry", []) if response.status_code == 200 else []
+
+        sorted_entries = sorted(
+            entries,
+            key=lambda e: e.get("resource", {}).get("authored", ""),
+            reverse=True
+        )
+        latest_items = sorted_entries[0].get("resource", {}).get("item", []) if sorted_entries else []
+        flatten_respuestas = flatten_items(latest_items) if latest_items else []
+
+        # Obtener observaciones clínicas
+        obs_response = requests.get(
+            f"{FHIR_STORE_PATH}/Observation",
+            headers=HEADERS,
+            params={"subject": f"Patient/{patient_id}"}
+        )
+        observaciones = []
+        if obs_response.status_code == 200:
+            obs_entries = obs_response.json().get("entry", [])
+            for entry in obs_entries:
+                resource = entry.get("resource", {})
+                display = resource.get("code", {}).get("coding", [{}])[0].get("display")
+                value = resource.get("valueQuantity", {}).get("value") or resource.get("valueString")
+                unit = resource.get("valueQuantity", {}).get("unit", "")
+                if display and value:
+                    observaciones.append(f"{display}: {value} {unit}".strip())
+
+        if not flatten_respuestas and not observaciones:
+            return {"cuestionario_resumen": "No se encontraron respuestas válidas ni observaciones clínicas."}
+
+        texto_entrada = "\n".join(flatten_respuestas[:60])
+        if observaciones:
+            texto_entrada += "\n\nAdemás, se registraron estas observaciones clínicas:\n" + "\n".join(observaciones[:20])
+
+        prompt = f"""A continuación se listan respuestas a un cuestionario clínico:
+
+{texto_entrada}
+
+Tu tarea es detectar y resumir únicamente las *banderas rojas* (hábitos de riesgo, enfermedades, condiciones crónicas o valores clínicos fuera de rango). No repitas todo. Sé conciso y directo."""
+        resumen = gemini_query(prompt)
+        return {"cuestionario_resumen": resumen}
+
+    except Exception:
+        raise HTTPException(status_code=500, detail="Error al generar resumen con Gemini")
+
 
 @app.get("/antecedentes_familiares")
 def get_family_history(subject: str):

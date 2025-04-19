@@ -25,18 +25,19 @@ deploy:
 		--platform managed \
 		--allow-unauthenticated \
 		--project $(PROJECT_ID) \
-		--set-env-vars GS_APIKEY=esJE70fUsGMGSqvz1k6WMAgf9Q2hH83xdsCUWl8IjCpFu4Tg
+		--set-env-vars GS_APIKEY=CDarNiOVVk4mGpiJc1Zv3XAS7POgx3lydJ00cXLS249UPG56
 
 run:
 	@echo "🚀 Running container locally..."
 	docker run -d -p 8080:8080 \
-		-e GS_APIKEY=esJE70fUsGMGSqvz1k6WMAgf9Q2hH83xdsCUWl8IjCpFu4Tg \
-		--name fhir-agent-test \
-		$(IMAGE)
+  		-e GS_APIKEY=CDarNiOVVk4mGpiJc1Zv3XAS7POgx3lydJ00cXLS249UPG56 \
+  		-e MEDLM_PROJECT=g-stg-gsv000-tlmd-erp-prj-6fe2 \
+  		--name fhir-agent-test-dev \
+  		fhir-agent-api
 
 stop:
 	@echo "🛑 Stopping and removing local container..."
-	docker stop fhir-agent-test || true
-	docker rm fhir-agent-test || true
+	docker stop fhir-agent-test-dev || true
+	docker rm fhir-agent-test-dev || true
 
 all: build tag push deploy
