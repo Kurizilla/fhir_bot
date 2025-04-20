@@ -9,6 +9,21 @@ from vertexai.preview.language_models import TextGenerationModel
 from vertexai.preview.generative_models import GenerativeModel
 from datetime import datetime
 from fastapi import Query
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict
+
+from models.response_models import (
+    AllergyEntry,
+    MedicamentoEntry,
+    CondicionEntry,
+    ObservacionEntry,
+    FamilyHistoryEntry,
+    PreguntaRespuesta,
+    CuestionarioRespuesta,
+    ResumenDisponibilidad,
+    CuestionarioResumenIA,
+)
+
 from utils.fhir_utils import (
     access_fhir,
     extract_patient_data,
@@ -49,33 +64,30 @@ HEADERS = {
 print("🔐 Loaded API Key:", HEADERS["GS-APIKEY"])  # Solo para debug temporal
 
 
-@app.get("/patient")
+@app.get("/patient", response_model=Dict)
 def get_patient(patient_id: str):
     resource = access_fhir("Patient", patient_id)
-    return JSONResponse(content=extract_patient_data(resource))
+    return extract_patient_data(resource)
 
-
-@app.get("/prevention")
+@app.get("/prevention", response_model=List[CuestionarioRespuesta])
 def get_prevention(patient: str):
-    return JSONResponse(content=extract_questionnaire_section(patient, "variables prevención"))
+    return extract_questionnaire_section(patient, "variables prevención")
 
-@app.get("/patologicos-personales")
+@app.get("/patologicos-personales", response_model=List[CuestionarioRespuesta])
 def get_patologicos_personales(patient: str):
-    return JSONResponse(content=extract_questionnaire_section(patient, "patológicos personales"))
+    return extract_questionnaire_section(patient, "patológicos personales")
 
-@app.get("/determinants")
+@app.get("/determinants", response_model=List[CuestionarioRespuesta])
 def get_determinants(patient: str):
-    return JSONResponse(content=extract_questionnaire_section(patient, "determinantes socioambientales"))
+    return extract_questionnaire_section(patient, "determinantes socioambientales")
 
-@app.get("/condiciones")
+@app.get("/condiciones", response_model=List[CondicionEntry])
 def get_conditions(patient: str):
-    results = extract_conditions(patient)
-    return JSONResponse(content=results)
+    return extract_conditions(patient)
 
-@app.get("/observaciones")
+@app.get("/observaciones", response_model=List[ObservacionEntry])
 def get_observaciones(patient: str):
-    results = extract_observaciones(patient)
-    return JSONResponse(content=results)
+    return extract_observaciones(patient)
 
 @app.post("/medlm_query")
 def medlm_query(payload: dict = Body(...)):
@@ -89,36 +101,32 @@ def medlm_query(payload: dict = Body(...)):
     for attempt in range(3):
         try:
             result = model.predict(prompt=prompt, **parameters_medlm)
-            return JSONResponse(content={"response": result.text})
+            return {"response": result.text}
         except Exception as e:
             wait = 0.5 * (2**attempt)
             time.sleep(wait)
             if attempt == 2:
                 raise HTTPException(status_code=500, detail="Error interno al usar MedLM")
 
-@app.get("/alergias")
+@app.get("/alergias", response_model=List[AllergyEntry])
 def get_alergias(patient: str):
-    return JSONResponse(content=extract_allergies(patient))
+    return extract_allergies(patient)
 
-@app.get("/medicamentos")
+@app.get("/medicamentos", response_model=List[MedicamentoEntry])
 def get_medications(patient: str):
-    return JSONResponse(content=extract_medications(patient))
+    return extract_medications(patient)
 
-@app.get("/disponibilidad_recursos")
+@app.get("/disponibilidad_recursos", response_model=ResumenDisponibilidad)
 def disponibilidad_recursos(patient_id: str = Query(..., description="ID del paciente")):
-    resumen = extract_disponibilidad_resumen(patient_id)
-    return JSONResponse(content=resumen)
+    return extract_disponibilidad_resumen(patient_id)
 
-@app.get("/banderas_rojas")
+@app.get("/banderas_rojas", response_model=CuestionarioResumenIA)
 def banderas_rojas(patient_id: str = Query(..., description="ID del paciente")):
-    resumen = extract_banderas_rojas(patient_id)
-    return JSONResponse(content=resumen)
+    return extract_banderas_rojas(patient_id)
 
-
-@app.get("/antecedentes_familiares")
+@app.get("/antecedentes_familiares", response_model=List[FamilyHistoryEntry])
 def get_family_history(patient: str):
-    return JSONResponse(content=extract_family_history(patient))
-
+    return extract_family_history(patient)
 
 @app.get("/health")
 def health():
