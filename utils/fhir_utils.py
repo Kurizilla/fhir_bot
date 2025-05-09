@@ -378,3 +378,198 @@ def extract_banderas_rojas(patient_id: str):
 Tu tarea es detectar y resumir únicamente las *banderas rojas* (hábitos de riesgo, enfermedades, condiciones crónicas o valores clínicos fuera de rango). No repitas todo. Sé conciso y directo."""
     resumen = gemini_query(prompt)
     return {"cuestionario_resumen": resumen}
+
+def extract_dietary_habits(patient_id: str):
+    clean_patient_id = patient_id.replace("Patient/", "")
+    response = requests.get(
+        f"{FHIR_STORE_PATH}/QuestionnaireResponse",
+        headers=HEADERS,
+        params={"subject": f"Patient/{clean_patient_id}"}
+    )
+
+    if response.status_code != 200:
+        raise Exception("No se pudo obtener el QuestionnaireResponse")
+
+    questionnaire_responses = response.json().get("entry", [])
+    results = {
+        "come_verduras": None,
+        "frecuencia_verduras": None,
+        "come_frutas": None,
+        "frecuencia_frutas": None
+    }
+
+    for entry in questionnaire_responses:
+        resource = entry.get("resource", {})
+        items = resource.get("item", [])
+
+        for section in items:
+            if section.get("linkId") == "10001":  # Sección: Variables prevención
+                for question in section.get("item", []):
+                    link_id = question.get("linkId")
+
+                    # Verduras
+                    if link_id == "10021":
+                        results["come_verduras"] = True
+                        for subquestion in question.get("item", []):
+                            if subquestion.get("linkId") == "10022":
+                                answer = subquestion.get("answer", [{}])[0]
+                                results["frecuencia_verduras"] = answer.get("valueInteger")
+
+                    # Frutas
+                    if link_id == "10023":
+                        results["come_frutas"] = True
+                        for subquestion in question.get("item", []):
+                            if subquestion.get("linkId") == "10024":
+                                answer = subquestion.get("answer", [{}])[0]
+                                results["frecuencia_frutas"] = answer.get("valueInteger")
+
+    return results
+
+
+def extract_smoking_data(patient_id: str):
+    clean_patient_id = patient_id.replace("Patient/", "")
+    response = requests.get(
+        f"{FHIR_STORE_PATH}/QuestionnaireResponse",
+        headers=HEADERS,
+        params={"subject": f"Patient/{clean_patient_id}"}
+    )
+
+    if response.status_code != 200:
+        raise Exception("No se pudo obtener el QuestionnaireResponse")
+
+    questionnaire_responses = response.json().get("entry", [])
+    results = {
+        "fuma": None,
+        "anios_fumando": None,
+        "cigarros_por_anio": None
+    }
+
+    for entry in questionnaire_responses:
+        resource = entry.get("resource", {})
+        items = resource.get("item", [])
+
+        for section in items:
+            if section.get("linkId") == "10001":  # Variables prevención
+                for question in section.get("item", []):
+                    if question.get("linkId") == "10012":  # ¿Fuma?
+                        # Caso 2: viene valueBoolean directamente
+                        fuma_answer = question.get("answer", [])
+                        if fuma_answer and "valueBoolean" in fuma_answer[0]:
+                            results["fuma"] = fuma_answer[0]["valueBoolean"]
+                        else:
+                            # Caso 3: evaluar existencia de subitems
+                            subitems = question.get("item", [])
+                            link_ids_presentes = [item.get("linkId") for item in subitems]
+
+                            if "10013" in link_ids_presentes and "10104" in link_ids_presentes:
+                                results["fuma"] = True  # aunque los answers estén vacíos
+
+                            # Extraer valores de subitems
+                            for subq in subitems:
+                                if subq.get("linkId") == "10013":
+                                    for ans in subq.get("answer", []):
+                                        if "valueString" in ans:
+                                            results["cigarros_por_anio"] = ans["valueString"]
+                                if subq.get("linkId") == "10104":
+                                    for ans in subq.get("answer", []):
+                                        if "valueInteger" in ans:
+                                            results["anios_fumando"] = ans["valueInteger"]
+
+    return results
+
+def extract_bmi(patient_id: str):
+    clean_patient_id = patient_id.replace("Patient/", "")
+    response = requests.get(
+        f"{FHIR_STORE_PATH}/Observation",
+        headers=HEADERS,
+        params={"subject": f"Patient/{clean_patient_id}"}
+    )
+
+    if response.status_code != 200:
+        raise Exception("No se pudo obtener el recurso Observation")
+
+    entries = response.json().get("entry", [])
+    bmi_observations = []
+
+    for entry in entries:
+        obs = entry.get("resource", {})
+        codings = obs.get("code", {}).get("coding", [])
+
+        for coding in codings:
+            code = coding.get("code", "").lower()
+            display = coding.get("display", "").lower()
+            system = coding.get("system", "").lower()
+
+            if code == "imc" or "masa corporal" in display or "body mass index" in display:
+                bmi_observations.append(obs)
+                break  # ya lo encontramos, no necesitamos ver más codings
+
+    if not bmi_observations:
+        return {"imc": None}
+
+    latest = sorted(
+        bmi_observations,
+        key=lambda o: o.get("effectiveDateTime", ""),
+        reverse=True
+    )[0]
+
+    imc_value = latest.get("valueQuantity", {}).get("value")
+
+    if imc_value is None:
+        for comp in latest.get("component", []):
+            value_str = comp.get("valueString", "")
+            try:
+                imc_value = float(value_str.split()[0])
+            except (ValueError, IndexError):
+                imc_value = None
+
+    return {"imc": imc_value}
+
+import json
+
+def extract_diabetes_status(patient_id: str):
+    clean_patient_id = patient_id.replace("Patient/", "")
+    response = requests.get(
+        f"{FHIR_STORE_PATH}/QuestionnaireResponse",
+        headers=HEADERS,
+        params={"subject": f"Patient/{clean_patient_id}"}
+    )
+
+    if response.status_code != 200:
+        raise Exception("No se pudo obtener el QuestionnaireResponse")
+
+    questionnaire_responses = response.json().get("entry", [])
+    results = {
+        "diabetes": None,
+        "tipo_diabetes": None
+    }
+
+    for entry in questionnaire_responses:
+        resource = entry.get("resource", {})
+        items = resource.get("item", [])
+
+        for section in items:
+            if section.get("linkId") == "10301":  # Patológicos personales
+                for question in section.get("item", []):
+                    if question.get("linkId") == "10302":  # ¿Tiene diabetes?
+                        subitems = question.get("item", [])
+
+                        if subitems and len(subitems) > 0:
+                            results["diabetes"] = True  # ✅ PRIORIDAD MÁXIMA
+                            for subq in subitems:
+                                if subq.get("linkId") == "10303":  # ¿Sabe qué tipo?
+                                    for ans in subq.get("answer", []):
+                                        if "valueString" in ans:
+                                            results["tipo_diabetes"] = ans["valueString"]
+                            return results  # ✅ TERMINAMOS AQUÍ SI HAY SUBPREGUNTAS
+
+                        # Solo si NO hay subpreguntas, se evalúa valueBoolean
+                        answer = question.get("answer", [])
+                        if answer and "valueBoolean" in answer[0]:
+                            results["diabetes"] = answer[0]["valueBoolean"]
+
+    return results
+
+
+
+
