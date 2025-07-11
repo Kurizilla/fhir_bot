@@ -48,7 +48,6 @@ HEADERS = {
     "GS-APIKEY": os.getenv("GS_APIKEY")
 }
 
-print("🔐 Loaded API Key:", HEADERS["GS-APIKEY"])
 
 @app.get("/patient")
 def get_patient(patient_id: str):

@@ -7,7 +7,7 @@ REGION=us-central1
 
 build:
 	@echo "🔨 Building Docker image..."
-	docker build -t $(IMAGE) .
+	docker build --platform linux/amd64 -t $(IMAGE) .
 
 tag:
 	@echo "🏷️ Tagging image..."
@@ -17,7 +17,7 @@ push:
 	@echo "📤 Pushing image to Artifact Registry..."
 	docker push $(REGISTRY):latest
 
-deploy:
+deploy: build tag push
 	@echo "🚀 Deploying to Cloud Run..."
 	gcloud run deploy $(IMAGE) \
 		--image $(REGISTRY):latest \
@@ -25,14 +25,14 @@ deploy:
 		--platform managed \
 		--allow-unauthenticated \
 		--project $(PROJECT_ID) \
-		--set-env-vars GS_APIKEY=CDarNiOVVk4mGpiJc1Zv3XAS7POgx3lydJ00cXLS249UPG56
+		--set-env-vars GS_APIKEY=$(GS_APIKEY) \
+		--set-env-vars MEDLM_PROJECT=$(MEDLM_PROJECT)
 
-run:
+run: build
 	@echo "🚀 Running container locally..."
-	docker run -d -p 8080:8080 \
-  		-e GS_APIKEY=CDarNiOVVk4mGpiJc1Zv3XAS7POgx3lydJ00cXLS249UPG56 \
-  		-e MEDLM_PROJECT=g-stg-gsv000-tlmd-erp-prj-6fe2 \
-  		--name fhir-agent-test-dev \
+	docker run -p 8080:8080 \
+  		-e GS_APIKEY=$(GS_APIKEY) \
+  		-e MEDLM_PROJECT=$(MEDLM_PROJECT) \
   		fhir-agent-api
 
 stop:

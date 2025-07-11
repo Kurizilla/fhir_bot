@@ -38,7 +38,7 @@ def gemini_query(prompt: str):
 FHIR_STORE_PATH = "https://api-qa.fhir.goes.gob.sv/v1/r4/"
 HEADERS = {
     "Accept": "application/json",
-    "GS-APIKEY": "CDarNiOVVk4mGpiJc1Zv3XAS7POgx3lydJ00cXLS249UPG56"
+    "GS-APIKEY": os.getenv("GS_APIKEY")
 }
 
 def access_fhir(resource_type: str, resource_id: str):
