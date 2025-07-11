@@ -1,2 +1,18 @@
+# General files and directories to exclude
+.idea
 .venv/
+.venv/*
+.git
+.DS_Store
+
+# Custom files created
+.ipynb_checkpoints
+*.ipynb
+README.md
+uv.lock
+
+# Custom directories
+notebooks/*
+data/*
+.envrc
 __pycache__/

@@ -1,23 +1,23 @@
-# Usa una imagen oficial de Python como base
 FROM python:3.12-slim
 
-# Establece el directorio de trabajo dentro del contenedor
+# Set Python environment variables for container optimization
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONHASHSEED=random \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
 WORKDIR /app
 
-# Instala uv
-RUN pip install --no-cache-dir uv
+# Install uv
+RUN pip install uv
 
-# Copia los archivos de configuración de uv
-COPY pyproject.toml  ./
+# Copy pyproject.toml and install dependencies
+COPY pyproject.toml .
+RUN uv sync --no-dev
 
-# Instala las dependencias usando uv
-RUN uv sync
-
-# Copia el código fuente de la aplicación
+# Copy the application
 COPY . .
+ENV PATH="/app/.venv/bin:$PATH"
 
-# Puerto que usará Cloud Run
-ENV PORT=8080
-
-# Comando para iniciar el servidor usando uv
-CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]

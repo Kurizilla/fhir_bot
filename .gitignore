@@ -146,3 +146,4 @@ Thumbs.db
 
 # uv
 .venv/
+uv.lock

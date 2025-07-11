@@ -7,7 +7,7 @@ REGION=us-central1
 
 build:
 	@echo "🔨 Building Docker image..."
-	docker build --platform linux/amd64 -t $(IMAGE) .
+	docker build --platform linux/amd64 --no-cache -t $(IMAGE) .
 
 tag:
 	@echo "🏷️ Tagging image..."
