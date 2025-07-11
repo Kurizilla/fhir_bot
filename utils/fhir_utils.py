@@ -137,58 +137,96 @@ def extract_conditions(patient: str):
             results = []
             for entry in entries:
                 resource = entry.get("resource", {})
-                condition_name = resource.get("code", {}).get("coding", [{}])[0].get("display", "Desconocida")
-                condition_code = resource.get("code", {}).get("coding", [{}])[0].get("code", "")
-                verification_status = resource.get("verificationStatus", {}).get("coding", [{}])[0].get("display", "Desconocido")
+                
+                # Extraer información de la condición
+                code_obj = resource.get("code", {})
+                condition_name = "Desconocida"
+                condition_code = ""
+                
+                # Priorizar text sobre coding para el nombre
+                if "text" in code_obj:
+                    condition_name = code_obj["text"]
+                elif "coding" in code_obj and code_obj["coding"]:
+                    condition_name = code_obj["coding"][0].get("display", "Desconocida")
+                
+                # Extraer código si existe
+                if "coding" in code_obj and code_obj["coding"]:
+                    condition_code = code_obj["coding"][0].get("code", "")
+                
+                # Extraer estado de verificación
+                verification_obj = resource.get("verificationStatus", {})
+                verification_status = "Desconocido"
+                if "coding" in verification_obj and verification_obj["coding"]:
+                    verification_status = verification_obj["coding"][0].get("code", "Desconocido")
+                
+                # Extraer estado clínico
+                clinical_obj = resource.get("clinicalStatus", {})
+                clinical_status = "Desconocido"
+                if "coding" in clinical_obj and clinical_obj["coding"]:
+                    clinical_status = clinical_obj["coding"][0].get("code", "Desconocido")
+                
+                # Extraer fecha de inicio si existe
+                onset_date = resource.get("onsetDateTime", resource.get("recordedDate", "Fecha no disponible"))
                 recorded_date = resource.get("recordedDate", "Fecha no disponible")
+                
                 results.append({
                     "condicion": condition_name,
                     "codigo": condition_code,
+                    "fecha_inicio": onset_date,
                     "fecha_registro": recorded_date,
-                    "estado": verification_status
+                    "estado_verificacion": verification_status,
+                    "estado_clinico": clinical_status
                 })
             return results
     raise HTTPException(status_code=404, detail="No se encontraron condiciones clínicas registradas")
 
 def extract_observaciones(patient: str):
-    for candidate in [patient, patient.replace("Patient/", "")]:
-        response = requests.get(
-            f"{FHIR_STORE_PATH}/Observation",
-            headers=HEADERS,
-            params={"patient": candidate}
-        )
-        if response.status_code == 200:
-            entries = response.json().get("entry", [])
-            results = []
-            for entry in entries:
-                resource = entry.get("resource", {})
-                components = resource.get("component", [])
-                for comp in components:
-                    code = comp.get("code", {}).get("text", "Observación sin nombre")
-                    valor = None
-                    unidad = None
-                    if "valueQuantity" in comp:
-                        valor = comp["valueQuantity"].get("value", "Desconocido")
-                        unidad = comp["valueQuantity"].get("unit", "")
-                    elif "valueString" in comp:
-                        valor = comp["valueString"]
-                        unidad = ""
-                    referencia = comp.get("referenceRange", [{}])[0]
-                    referencia_baja = referencia.get("low", {}).get("value")
-                    referencia_alta = referencia.get("high", {}).get("value")
-                    results.append({
-                        "observacion": code,
-                        "valor": valor,
-                        "unidad": unidad,
-                        "rango_referencia": {
-                            "min": referencia_baja,
-                            "max": referencia_alta
-                        },
-                        "fecha": resource.get("effectiveDateTime", "Fecha no disponible"),
-                        "paciente_id": resource.get("patient", {}).get("reference", "").replace("Patient/", "")
-                    })
-            return results
-    raise HTTPException(status_code=404, detail="No se encontraron observaciones registradas")
+    print(f"🧪 Iniciando extracción de observaciones para: {patient}")
+
+    url = f"{FHIR_STORE_PATH}/Observation"
+    params = {"subject": f"Patient/{patient}"}
+    print(f"🌐 GET {url} con params: {params}")
+
+    response = requests.get(url, headers=HEADERS, params=params)
+
+    print(f"📥 Status Code: {response.status_code}")
+    try:
+        json_data = response.json()
+    except Exception as e:
+        print(f"❌ Error al parsear JSON: {e}")
+        raise HTTPException(status_code=500, detail="Error al obtener observaciones")
+
+    print(f"📦 Respuesta cruda: {json_data}")
+
+    entries = json_data.get("entry", [])
+    if not entries:
+        print("⚠️ No se encontraron entradas en el bundle.")
+        raise HTTPException(status_code=404, detail="No se encontraron observaciones registradas")
+
+    results = []
+    for entry in entries:
+        resource = entry.get("resource", {})
+        code = resource.get("code", {}).get("text", "Observación sin nombre")
+        valor = resource.get("valueQuantity", {}).get("value")
+        unidad = resource.get("valueQuantity", {}).get("unit")
+        referencia = resource.get("referenceRange", [{}])[0]
+        referencia_baja = referencia.get("low", {}).get("value")
+        referencia_alta = referencia.get("high", {}).get("value")
+
+        results.append({
+            "observacion": code,
+            "valor": valor,
+            "unidad": unidad,
+            "rango_referencia": {
+                "min": referencia_baja,
+                "max": referencia_alta
+            },
+            "fecha": resource.get("effectiveDateTime", "Fecha no disponible"),
+            "paciente_id": resource.get("subject", {}).get("reference", "").replace("Patient/", "")
+        })
+
+    return results
+
 
 def extract_allergies(patient: str):
     patient_id = patient.replace("Patient/", "")
@@ -281,16 +319,34 @@ def extract_family_history(patient: str):
         if resource.get("status") != "completed":
             continue
 
-        relationship = resource.get("relationship", {}).get("coding", [{}])[0].get("display", "Relación desconocida")
+        # Extraer relación - maneja tanto coding como text
+        relationship_obj = resource.get("relationship", {})
+        relationship = "Relación desconocida"
+        if "coding" in relationship_obj and relationship_obj["coding"]:
+            relationship = relationship_obj["coding"][0].get("display", "Relación desconocida")
+        elif "text" in relationship_obj:
+            relationship = relationship_obj["text"]
+        
         patient_ref = resource.get("patient", {}).get("reference", "").replace("Patient/", "")
 
         for condition in resource.get("condition", []):
-            cond_info = condition.get("code", {}).get("coding", [{}])[0]
+            cond_info = condition.get("code", {})
+            
+            # Extraer condición - maneja tanto coding como text
+            condicion = "Condición desconocida"
+            codigo = ""
+            
+            if "coding" in cond_info and cond_info["coding"]:
+                condicion = cond_info["coding"][0].get("display", "Condición desconocida")
+                codigo = cond_info["coding"][0].get("code", "")
+            elif "text" in cond_info:
+                condicion = cond_info["text"]
+            
             results.append({
                 "paciente_id": patient_ref,
-                "relacion": relationship,
-                "condicion": cond_info.get("display", "Condición desconocida").strip(),
-                "codigo": cond_info.get("code", "").strip(),
+                "relacion": relationship.strip(),
+                "condicion": condicion.strip(),
+                "codigo": codigo.strip(),
                 "contribuyo_a_la_muerte": condition.get("contributedToDeath", False)
             })
 
